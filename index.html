@@ -10,7 +10,7 @@
 <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
 <link rel="apple-touch-icon" sizes="192x192" href="icon-192.png">
 <link rel="apple-touch-icon" sizes="512x512" href="icon-512.png">
-<link rel="manifest" href="manifest.webmanifest">
+<link rel="manifest" href="manifest.json">
 <title>生產完工計算機</title>
 <style>
 :root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:dark;--bg:#000;--card:#1a2433;--line:#7fc4ff66;--tx:#fff;--sub:#9fb3c8;--ac:#7fc4ff}
@@ -116,9 +116,9 @@ function computeRow(d,cfg){
   const daily=(R>0&&S>0)?R*40/S:null;
   const remain=(d.total!==""&&T>=0)?T-done:null;
   const hrs=(daily&&remain!==null)?remain/daily*24:null;
-  let finish="";
-  if(hrs!==null){ if(hrs<=0)finish="已完工"; else{const f=calcFinish(parseStartM(d.startStr),hrs,cfg);if(f)finish=fmtDT(f)} }
-  return {rpm:d.rpm,daily:daily,qtys:qtys,done:done,finish:finish};
+  let finish="",finishAt=null;
+  if(hrs!==null){ if(hrs<=0)finish="已完工"; else{const f=calcFinish(parseStartM(d.startStr),hrs,cfg);if(f){finish=fmtDT(f);finishAt=f.getTime()}} }
+  return {rpm:d.rpm,daily:daily,qtys:qtys,done:done,finish:finish,remain:remain,hrs:hrs,finishAt:finishAt};
 }
 //ENDROW
 function loadSch(){
@@ -150,6 +150,8 @@ function App(){
   const [schMsg,setSchMsg]=useState("");
   const [expMsg,setExpMsg]=useState("");
   const [expOpen,setExpOpen]=useState(false);
+  const [sumOpen,setSumOpen]=useState(true);
+  const [sumSort,setSumSort]=useState("finish");
   const chSch=(k,v)=>{setSch(p=>({...p,[k]:v}));setSchMsg("")};
   const saveSch=()=>{try{localStorage.setItem("prodSchedule",JSON.stringify(sch))}catch(e){}setSavedSch(sch);setSchMsg("已儲存為預設")};
   const resetSch=()=>{try{localStorage.removeItem("prodSchedule")}catch(e){}setSch(DEF_SCH);setSavedSch(DEF_SCH);setSchMsg("已還原為原廠預設")};
@@ -218,12 +220,19 @@ function App(){
         return row}));
       const detail=[["機台","第幾筆","數量","記錄時間"]];
       list.forEach(x=>x.recs.forEach((r,i)=>detail.push([x.n,i+1,r.qty,fmtFull(r.time)])));
+      const rk=x=>x.r.finish==="已完工"?-1:(x.r.finishAt!==null?x.r.finishAt:Infinity);
+      const sumRows=[["機台","日產量","總成品數量","已織","剩餘數量","剩餘小時","預計完工日期時間"]].concat(
+        list.map((x,idx)=>({x:x,idx:idx})).filter(o=>all[o.x.n]).sort((a,b)=>rk(a.x)-rk(b.x)||a.idx-b.idx).map(o=>{const x=o.x,T=parseFloat(x.d.total);
+          return [x.n,x.r.daily!==null?Math.round(x.r.daily*100)/100:"",(x.d.total!==""&&!isNaN(T))?T:"",x.recs.length?x.r.done:"",x.r.remain!==null?Math.max(0,Math.round(x.r.remain*100)/100):"",x.r.hrs!==null?Math.max(0,Math.round(x.r.hrs*100)/100):"",x.r.finish]}));
+      const ws0=XLSX.utils.aoa_to_sheet(sumRows);
+      ws0["!cols"]=[{wch:8},{wch:11},{wch:13},{wch:11},{wch:11},{wch:11},{wch:20}];
       const ws1=XLSX.utils.aoa_to_sheet(rows);
       ws1["!cols"]=head.map((t,i)=>({wch:i===0?8:(i===5||i===head.length-1)?20:11}));
       ws1["!freeze"]={xSplit:1,ySplit:1};
       const ws2=XLSX.utils.aoa_to_sheet(detail);
       ws2["!cols"]=[{wch:8},{wch:8},{wch:12},{wch:20}];
       const wb=XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb,ws0,"完工時間總表");
       XLSX.utils.book_append_sheet(wb,ws1,"19台總表");
       XLSX.utils.book_append_sheet(wb,ws2,"生產紀錄明細");
       const buf=XLSX.write(wb,{bookType:"xlsx",type:"array"});
@@ -311,6 +320,29 @@ function App(){
       h("div",{className:"res"},h("span",null,"剩餘運轉時間"),h("b",null,hrs===null?"–":fmtN(hrs)+" 小時")),
       h("div",{className:"res"},h("span",null,"預計完工日期時間"),h("b",null,finish))),
     h("div",{className:"card"},
+      h("button",{className:"tog",onClick:()=>setSumOpen(o=>!o)},h("span",null,"所有機台完工時間總表"),h("span",null,sumOpen?"▲":"▼")),
+      sumOpen&&(()=>{
+        const all=MACHINES.map((n,idx)=>{const d=n===mid?curData:used[n];const has=n===mid?!isEmptyData(curData):!!used[n];
+          return {n:n,idx:idx,has:has,r:(d&&has)?computeRow({total:d.total||"",rpm:d.rpm||"",strips:d.strips||"",startStr:d.startStr,recs:(d.recs||[])},cfg):null,total:d&&d.total}});
+        const withData=all.filter(x=>x.has);
+        const rank=x=>x.r&&x.r.finish==="已完工"?-1:(x.r&&x.r.finishAt!==null?x.r.finishAt:Infinity);
+        const rowsS=withData.slice().sort((a,b)=>sumSort==="finish"?(rank(a)-rank(b)||a.idx-b.idx):a.idx-b.idx);
+        return h("div",{style:{marginTop:12}},
+          h("div",{style:{display:"flex",gap:8,marginBottom:8}},
+            h("button",{className:"wide",style:{margin:0,opacity:sumSort==="finish"?1:.55},onClick:()=>setSumSort("finish")},"依完工時間"),
+            h("button",{className:"wide",style:{margin:0,opacity:sumSort==="machine"?1:.55},onClick:()=>setSumSort("machine")},"依機台順序")),
+          h("div",{className:"tbl",style:{marginTop:0}},h("table",null,
+            h("thead",null,h("tr",null,["機台","日產量","總成品數量","已織","剩餘數量","剩餘小時","預計完工日期時間"].map(t=>h("th",{key:t},t)))),
+            h("tbody",null,rowsS.map(x=>h("tr",{key:x.n,className:x.n===mid?"cur":"",style:{cursor:"pointer"},onClick:()=>switchMachine(x.n)},
+              h("td",null,x.n),
+              h("td",null,x.r&&x.r.daily!==null?fmtN(x.r.daily):""),
+              h("td",null,x.total!==undefined&&x.total!==""?fmtN(parseFloat(x.total)):""),
+              h("td",null,x.r&&x.r.qtys.length?fmtN(x.r.done):""),
+              h("td",null,x.r&&x.r.remain!==null?fmtN(Math.max(0,x.r.remain)):""),
+              h("td",null,x.r&&x.r.hrs!==null?fmtN(Math.max(0,x.r.hrs)):""),
+              h("td",{style:{fontWeight:700}},x.r?x.r.finish:"")))))))
+      })()),
+    h("div",{className:"card"},
       h("button",{className:"tog",onClick:()=>setTblOpen(o=>!o)},h("span",null,"各機台儲存資料表"),h("span",null,tblOpen?"▲":"▼")),
       tblOpen&&(()=>{
         const rows=MACHINES.map(n=>{const d=n===mid?curData:used[n];return {n:n,r:d?computeRow({total:d.total||"",rpm:d.rpm||"",strips:d.strips||"",startStr:d.startStr,recs:(d.recs||[])},cfg):null}});
@@ -334,7 +366,7 @@ function App(){
       h("button",{className:"wide",onClick:exportJson},"匯出完整備份（JSON）"),
       h("label",{className:"wide",style:{display:"flex",alignItems:"center",justifyContent:"center",minHeight:52,border:"1px solid var(--line)",background:"#0b121c",borderRadius:12,color:"var(--tx)",fontSize:16,margin:"6px 0 0",cursor:"pointer"}},"匯入備份（JSON）",h("input",{type:"file",accept:".json,application/json",style:{display:"none"},onChange:importJson})),
       expMsg&&h("div",{className:"ok"},expMsg),
-      h("div",{className:"note"},"Excel 含兩個工作表：「19台總表」（19 台機台一覽，欄位同儲存資料表並加上總成品數量、條數、起算時間、剩餘數量）與「生產紀錄明細」（每筆數量與時間）；JSON 備份含所有機台資料與開機／休息設定，可於換手機或清除資料後匯入還原。手機上匯出會開啟分享選單，可選「儲存到檔案」。"))),
+      h("div",{className:"note"},"Excel 含三個工作表：「完工時間總表」（有資料的機台依完工時間排序）、「19台總表」（19 台機台一覽，欄位同儲存資料表並加上總成品數量、條數、起算時間、剩餘數量）與「生產紀錄明細」（每筆數量與時間）；JSON 備份含所有機台資料與開機／休息設定，可於換手機或清除資料後匯入還原。手機上匯出會開啟分享選單，可選「儲存到檔案」。"))),
     h("button",{className:"danger",onClick:clearAll},"一鍵清除所有資料"));
 }
 ReactDOM.createRoot(document.getElementById("root")).render(h(App));
